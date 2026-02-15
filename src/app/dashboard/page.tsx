@@ -66,28 +66,7 @@ export default function Dashboard() {
         setDate(getToday());
     }
 
-    // Auto-update date logic for Credit Cards
-    useEffect(() => {
-        if (paymentMethod === 'credit' && selectedCardId) {
-            const card = cards.find(c => c.id === selectedCardId);
-            if (card && card.closing_day) {
-                const today = new Date();
-                const currentDay = today.getDate();
-
-                // If today is after closing day, suggest next month
-                if (currentDay > card.closing_day) {
-                    const nextMonth = new Date(today);
-                    nextMonth.setMonth(nextMonth.getMonth() + 1);
-                    // Keep the same day of the month (e.g. 25th Jan -> 25th Feb)
-                    // This ensures it falls in the next billing cycle but keeps the "day" reference.
-                    nextMonth.setDate(currentDay);
-                    setDate(nextMonth.toISOString().split('T')[0]);
-                } else {
-                    setDate(getToday());
-                }
-            }
-        }
-    }, [paymentMethod, selectedCardId, cards]);
+    // Date auto-shift logic removed as per user request (competence date handled in handleAdd)
 
 
     // Settings States
@@ -155,32 +134,38 @@ export default function Dashboard() {
             ? -parseFloat(amount)
             : parseFloat(amount);
 
+        // Calculate Competence Date (Billing Month)
+        let competenceDate = date;
+        if ((paymentMethod === 'credit' || paymentMethod === 'debit') && selectedCardId) {
+            const card = cards.find(c => c.id === selectedCardId);
+            if (card && card.closing_day) {
+                const [y, m, d] = date.split('-').map(Number);
+                // If purchase day > closing day, bill goes to next month
+                if (d > card.closing_day) {
+                    const next = new Date(y, m - 1, d); // Month is 0-indexed
+                    next.setMonth(next.getMonth() + 1);
+                    competenceDate = next.toISOString().split('T')[0];
+                }
+            }
+        }
+
+        const transactionData = {
+            player: user.name,
+            amount: showModal === "expense" ? -Math.abs(parseFloat(amount)) : Math.abs(parseFloat(amount)), // Recalculate based on modal type to be safe
+            category: selectedCategory,
+            description: description || selectedCategory,
+            is_fixed: selectedCategory === "Fixo/Lazer",
+            installments: parseInt(installments) || 1,
+            payment_method: showModal === 'income' ? undefined : paymentMethod,
+            card_id: (paymentMethod === 'credit' || paymentMethod === 'debit') ? selectedCardId : undefined,
+            date: date, // Purchase Date (e.g. 25/02)
+            competence_date: competenceDate // Billing Date (e.g. 25/03)
+        };
+
         if (editingId) {
-            const isExpense = showModal === "expense";
-            await editTransaction(editingId, {
-                player: user.name,
-                amount: isExpense ? -Math.abs(parseFloat(amount)) : Math.abs(parseFloat(amount)),
-                category: selectedCategory,
-                description: description || selectedCategory,
-                is_fixed: selectedCategory === "Fixo/Lazer",
-                installments: parseInt(installments) || 1,
-                payment_method: showModal === 'income' ? undefined : paymentMethod,
-                card_id: (paymentMethod === 'credit' || paymentMethod === 'debit') ? selectedCardId : undefined,
-                date: date
-            });
+            await editTransaction(editingId, transactionData);
         } else {
-            // ... (keep existing add logic)
-            await addTransaction({
-                player: user.name,
-                amount: finalAmount,
-                category: selectedCategory,
-                description: description || selectedCategory,
-                is_fixed: selectedCategory === "Fixo/Lazer",
-                installments: parseInt(installments) || 1,
-                payment_method: showModal === 'income' ? undefined : paymentMethod,
-                card_id: (paymentMethod === 'credit' || paymentMethod === 'debit') ? selectedCardId : undefined,
-                date: date
-            });
+            await addTransaction(transactionData);
         }
 
         // Full Reset via closeModal
@@ -265,13 +250,16 @@ export default function Dashboard() {
     // Filtered Data
     const filteredTransactions = useMemo(() => {
         return transactions.filter(t => {
-            const d = new Date(t.created_at);
-            const mMatch = d.getUTCMonth() === selectedMonth;
-            const yMatch = d.getUTCFullYear() === selectedYear;
-            // const uMatch = filterUser === "Todos" || t.player === filterUser; // Removed as per new logic
-            return mMatch && yMatch; // && uMatch;
+            // Priority: Competence Date -> Date (Purchase) -> Created At
+            const dateStr = t.competence_date || t.date || t.created_at;
+            // Handle ISO string or YYYY-MM-DD
+            const d = new Date(dateStr.includes('T') ? dateStr : dateStr + 'T12:00:00');
+
+            const mMatch = d.getMonth() === selectedMonth;
+            const yMatch = d.getFullYear() === selectedYear;
+            return mMatch && yMatch;
         });
-    }, [transactions, selectedMonth, selectedYear]); // Removed filterUser from dependencies
+    }, [transactions, selectedMonth, selectedYear]);
 
     const totalSpent = Math.abs(
         filteredTransactions
@@ -530,12 +518,18 @@ export default function Dashboard() {
 
             {/* Floating Actions */}
             <div className="fixed bottom-6 left-1/2 -translate-x-1/2 w-full max-w-sm px-4 flex gap-3 z-40">
-                <SystemButton onClick={() => setShowModal("income")} variant="primary" className="flex-1 shadow-2xl">
-                    <TrendingUp size={18} className="mr-2 inline" /> Ganho
-                </SystemButton>
-                <SystemButton onClick={() => setShowModal("expense")} variant="danger" className="flex-1 shadow-2xl">
-                    <TrendingDown size={18} className="mr-2 inline" /> Gasto
-                </SystemButton>
+                <button
+                    onClick={() => setShowModal("income")}
+                    className="flex-1 bg-[#10B981] hover:bg-[#059669] text-white py-4 rounded-xl font-black uppercase tracking-widest shadow-xl flex items-center justify-center gap-2 transition-all active:scale-95 border-2 border-emerald-400/20"
+                >
+                    <TrendingUp size={20} /> Ganho
+                </button>
+                <button
+                    onClick={() => setShowModal("expense")}
+                    className="flex-1 bg-[#EF4444] hover:bg-[#DC2626] text-white py-4 rounded-xl font-black uppercase tracking-widest shadow-xl flex items-center justify-center gap-2 transition-all active:scale-95 border-2 border-red-400/20"
+                >
+                    <TrendingDown size={20} /> Gasto
+                </button>
             </div>
 
             {/* Modals */}
@@ -674,149 +668,163 @@ export default function Dashboard() {
                             </div>
                         </motion.div>
                     </div>
-                )}
+                )
 
-                <div className="flex justify-between items-center mb-6 shrink-0">
-                    <h2 className="text-white font-black tracking-widest uppercase flex items-center gap-2 text-sm"><Settings size={16} /> Configurações do Sistema</h2>
-                    <button onClick={() => setShowModal(null)}><X size={20} /></button>
-                </div>
-
-                {/* ... (Settings content omitted, assume unchanged if not targeting) ... */}
-                <div className="space-y-8 overflow-y-auto no-scrollbar pb-6 flex-1">
-                    {/* ... content ... */}
-                    {/* I need to keep the content inside Settings modal intact. I'll target the Transaction Modal specifically below. */}
-                    {/* Ah, I can't easily skip lines in block replacement without context. */}
-                    {/* Let's just target the Transaction Modal block roughly lines 695+ */}
-                </div>
-            </motion.div>
-        </div>
-    )
-}
-
-{
-    (showModal === 'income' || showModal === 'expense' || showModal === 'edit') && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center p-0">
-            <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="absolute inset-0 bg-black/90 backdrop-blur-md"
-                onClick={closeModal}
-            />
-            <motion.div
-                initial={{ y: "100%" }}
-                animate={{ y: 0 }}
-                exit={{ y: "100%" }}
-                transition={{ type: "spring", damping: 25, stiffness: 200 }}
-                className="relative w-full max-w-md bg-system-dark border-t border-system-blue/30 p-6 max-h-[90vh] overflow-y-auto"
-            >
-                <form onSubmit={handleAdd} className="space-y-6">
-                    <div>
-                        <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-2">{showModal === 'income' ? 'Valor da Recompensa' : 'Valor do Gasto de Missão'}</p>
-                        <input
-                            autoFocus
-                            type="number"
-                            step="0.01"
-                            required
-                            className="w-full bg-transparent text-5xl font-black text-white outline-none border-b border-system-border focus:border-system-blue transition-all"
-                            placeholder="0,00"
-                            value={amount}
-                            onChange={(e) => setAmount(e.target.value)}
+                {(showModal === 'income' || showModal === 'expense' || showModal === 'edit') && (
+                    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="absolute inset-0 bg-black/95 backdrop-blur-xl"
+                            onClick={closeModal}
                         />
-                    </div>
-
-                    {(showModal === 'expense' || (showModal === 'edit' && parseFloat(amount) < 0)) && (
-                        <div className="space-y-3">
-                            <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest">Método de Pagamento</p>
-                            <div className="flex gap-2 bg-black/20 p-1 rounded-lg">
-                                {[
-                                    { id: 'pix', label: 'Pix', icon: <QrCode size={16} /> },
-                                    { id: 'cash', label: 'Dinheiro', icon: <Banknote size={16} /> },
-                                    { id: 'credit', label: 'Crédito', icon: <CreditCard size={16} /> },
-                                    { id: 'debit', label: 'Débito', icon: <CreditCard size={16} /> }
-                                ].map(m => (
-                                    <button
-                                        type="button"
-                                        key={m.id}
-                                        onClick={() => setPaymentMethod(m.id)}
-                                        className={`flex-1 flex flex-col items-center gap-1 p-2 rounded-md transition-all ${paymentMethod === m.id ? 'bg-system-blue text-white shadow-lg' : 'text-gray-500 hover:text-white'}`}
-                                    >
-                                        {m.icon}
-                                        <span className="text-[9px] font-bold uppercase">{m.label}</span>
-                                    </button>
-                                ))}
+                        <motion.div
+                            initial={{ y: "100%" }}
+                            animate={{ y: 0 }}
+                            exit={{ y: "100%" }}
+                            transition={{ type: "spring", damping: 30, stiffness: 300 }}
+                            className="relative w-full sm:max-w-md bg-system-dark border-t sm:border border-system-blue/30 p-5 h-full sm:h-auto sm:rounded-2xl flex flex-col"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex justify-between items-center mb-4 shrink-0">
+                                <h2 className="text-white font-black tracking-widest uppercase flex items-center gap-2 text-xs">
+                                    {showModal === 'income' ? <TrendingUp size={16} className="text-emerald-500" /> : <TrendingDown size={16} className="text-rose-500" />}
+                                    {showModal === 'income' ? 'Novo Ganho' : 'Novo Gasto'}
+                                </h2>
+                                <button onClick={closeModal} className="p-2 bg-white/5 rounded-full"><X size={18} /></button>
                             </div>
 
-                            {(paymentMethod === 'credit' || paymentMethod === 'debit') && (
-                                <div className="animate-in fade-in slide-in-from-top-2">
-                                    <select
-                                        value={selectedCardId}
-                                        onChange={e => setSelectedCardId(e.target.value)}
-                                        className="w-full bg-black/40 border border-system-border rounded-lg p-3 text-white outline-none text-xs font-bold"
-                                        required
-                                    >
-                                        <option value="">Selecione o Cartão...</option>
-                                        {cards.filter(c => c.player === user.name && (c.type === 'both' || c.type === paymentMethod)).map(c => (
-                                            <option key={c.id} value={c.id}>{c.name} {c.closing_day ? `(Fecha dia ${c.closing_day})` : ''}</option>
+                            <form onSubmit={handleAdd} className="flex-1 overflow-y-auto no-scrollbar space-y-5">
+                                <div className="space-y-4">
+                                    <div className="relative">
+                                        <span className="absolute left-0 top-1/2 -translate-y-1/2 text-gray-500 font-bold text-lg">R$</span>
+                                        <input
+                                            autoFocus
+                                            type="number"
+                                            step="0.01"
+                                            required
+                                            className="w-full bg-transparent text-4xl font-black text-white outline-none pl-8 placeholder-gray-700"
+                                            placeholder="0.00"
+                                            value={amount}
+                                            onChange={(e) => setAmount(e.target.value)}
+                                        />
+                                    </div>
+                                    <input
+                                        type="text"
+                                        placeholder="Descrição (Ex: Pizza)"
+                                        className="w-full bg-black/40 border border-system-border rounded-xl p-3 text-white placeholder-gray-600 outline-none focus:border-system-blue transition-all font-bold text-lg"
+                                        value={description}
+                                        onChange={(e) => setDescription(e.target.value)}
+                                    />
+                                </div>
+
+                                <div className="flex gap-3">
+                                    <div className="flex-1">
+                                        <label className="text-[9px] text-gray-500 uppercase font-black tracking-widest pl-1 mb-1 block">Data Compra</label>
+                                        <input
+                                            type="date"
+                                            className="w-full bg-black/40 border border-system-border rounded-xl p-3 text-white uppercase text-xs font-bold outline-none [color-scheme:dark]"
+                                            value={date}
+                                            onChange={e => setDate(e.target.value)}
+                                        />
+                                    </div>
+                                    <div className="w-24">
+                                        <label className="text-[9px] text-gray-500 uppercase font-black tracking-widest pl-1 mb-1 block">Parcelas</label>
+                                        <div className="relative">
+                                            <input
+                                                type="number"
+                                                min="1"
+                                                className="w-full bg-black/40 border border-system-border rounded-xl p-3 text-center text-white outline-none font-bold text-sm"
+                                                value={installments}
+                                                onChange={(e) => setInstallments(e.target.value)}
+                                            />
+                                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 text-xs font-bold">x</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {(showModal === 'expense' || (showModal === 'edit' && parseFloat(amount) < 0)) && (
+                                    <div className="bg-black/20 p-2 rounded-xl space-y-2">
+                                        <div className="grid grid-cols-4 gap-1">
+                                            {[
+                                                { id: 'pix', label: 'Pix', icon: <QrCode size={14} /> },
+                                                { id: 'cash', label: 'Din', icon: <Banknote size={14} /> },
+                                                { id: 'credit', label: 'Créd', icon: <CreditCard size={14} /> },
+                                                { id: 'debit', label: 'Déb', icon: <CreditCard size={14} /> }
+                                            ].map(m => (
+                                                <button
+                                                    type="button"
+                                                    key={m.id}
+                                                    onClick={() => setPaymentMethod(m.id)}
+                                                    className={`flex flex-col items-center justify-center gap-1 py-2 rounded-lg transition-all ${paymentMethod === m.id ? 'bg-system-blue text-white shadow-lg' : 'text-gray-500 hover:text-white bg-white/5'}`}
+                                                >
+                                                    {m.icon}
+                                                    <span className="text-[9px] font-bold uppercase">{m.label}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+
+                                        {(paymentMethod === 'credit' || paymentMethod === 'debit') && (
+                                            <select
+                                                value={selectedCardId}
+                                                onChange={e => setSelectedCardId(e.target.value)}
+                                                className="w-full bg-black/40 border border-system-border rounded-lg p-2 text-white outline-none text-xs font-bold"
+                                                required
+                                            >
+                                                <option value="">Selecione o Cartão...</option>
+                                                {cards.filter(c => c.player === user.name && (c.type === 'both' || c.type === paymentMethod)).map(c => (
+                                                    <option key={c.id} value={c.id}>{c.name} {c.closing_day ? `(Fecha dia ${c.closing_day})` : ''}</option>
+                                                ))}
+                                            </select>
+                                        )}
+                                    </div>
+                                )}
+
+                                <div>
+                                    <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-2 pl-1">Categoria</p>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {CATEGORIES.map((cat) => (
+                                            <button
+                                                key={cat.label}
+                                                type="button"
+                                                onClick={() => setSelectedCategory(cat.label)}
+                                                className={`p-2 rounded-xl border flex flex-col items-center gap-1 transition-all ${selectedCategory === cat.label
+                                                    ? "bg-system-blue border-system-blue text-white shadow-[0_0_15px_rgba(37,99,235,0.5)]"
+                                                    : "bg-black/40 border-system-border text-gray-400 hover:border-system-blue/50 hover:text-white"
+                                                    }`}
+                                            >
+                                                <span className="text-xl">{cat.icon}</span>
+                                                <span className="text-[9px] font-bold uppercase tracking-wider">{cat.label}</span>
+                                            </button>
                                         ))}
-                                    </select>
-                                    {cards.filter(c => c.player === user.name).length === 0 && (
-                                        <p className="text-[10px] text-system-danger mt-1">🔴 Você não tem cartões cadastrados. Vá em Configurações ⚙️.</p>
+                                    </div>
+                                </div>
+
+                                <div className="pt-2 pb-6 sm:pb-0">
+                                    <button
+                                        type="submit"
+                                        disabled={loading}
+                                        className="w-full bg-white text-black font-black uppercase tracking-widest py-4 rounded-xl text-sm hover:scale-[1.02] active:scale-95 transition-all shadow-xl"
+                                    >
+                                        {loading ? "Salvando..." : (editingId ? 'Salvar' : 'Adicionar')}
+                                    </button>
+
+                                    {editingId && (
+                                        <button
+                                            type="button"
+                                            onClick={handleDelete}
+                                            className="w-full mt-3 p-3 text-system-danger text-[10px] font-black uppercase tracking-widest hover:bg-system-danger/10 rounded-lg transition-all"
+                                        >
+                                            Excluir
+                                        </button>
                                     )}
                                 </div>
-                            )}
-                        </div>
-                    )}
-
-                    <div className="flex flex-col sm:flex-row gap-4">
-                        <div className="w-full sm:w-1/3">
-                            <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-2">Data</p>
-                            <input
-                                type="date"
-                                className="w-full bg-black/40 border border-system-border rounded-lg p-4 text-white uppercase text-xs font-bold outline-none focus:border-system-blue [color-scheme:dark]"
-                                value={date}
-                                onChange={e => setDate(e.target.value)}
-                            />
-                        </div>
-                        <div className="flex-1">
-                            <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-2">Descrição</p>
-                            <input
-                                type="text"
-                                placeholder={showModal === 'income' ? 'Ex: Freela Design' : 'Ex: Jantar Outback'}
-                                className="w-full bg-black/40 border border-system-border rounded-lg p-4 text-white placeholder-gray-600 outline-none focus:border-system-blue transition-all font-bold"
-                                value={description}
-                                onChange={(e) => setDescription(e.target.value)}
-                            />
-                            ? 'bg-system-blue/20 border-system-blue text-system-blue'
-                            : 'bg-black/40 border-system-border text-gray-600'
-                                    }`}
-                            >
-                            <span className="text-xl">{cat.icon}</span>
-                            <span className="text-[9px] font-black uppercase">{cat.label}</span>
-                        </button>
-                        ))}
+                            </form>
+                        </motion.div>
                     </div>
-
-                    <div className="flex gap-3">
-                        {editingId && (
-                            <button
-                                type="button"
-                                onClick={handleDelete}
-                                className="bg-system-danger/20 border border-system-danger text-system-danger p-5 rounded-lg"
-                            >
-                                <Trash2 size={24} />
-                            </button>
-                        )}
-                        <SystemButton type="submit" variant={showModal === 'income' ? 'primary' : 'danger'} className="flex-1 py-5 text-xl uppercase font-black">
-                            {editingId ? 'Salvar Alterações' : 'Confirmar Registro'}
-                        </SystemButton>
-                    </div>
-                </form>
-            </motion.div>
+                )}
+            </AnimatePresence>
         </div>
-    )
-}
-            </AnimatePresence >
-        </div >
     );
 }
