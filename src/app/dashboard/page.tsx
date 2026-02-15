@@ -668,7 +668,8 @@ export default function Dashboard() {
                             </div>
                         </motion.div>
                     </div>
-                )
+                )}
+
 
                 {(showModal === 'income' || showModal === 'expense' || showModal === 'edit') && (
                     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
