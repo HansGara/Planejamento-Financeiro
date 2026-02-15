@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+:root {
+  /* Only Dark Mode matters for "The System" */
+  --background: #050505; /* Void Black */
+  --foreground: #E0E0E0; /* Light Gray Text */
+  
+  /* System Colors */
+  --color-system-blue: #00A3FF; /* The iconic blue glow */
+  --color-system-dark: #0B0E14; /* Card background */
+  --color-system-border: #1E2E45; /* Subtle borders */
+  --color-system-danger: #FF3333; /* For alerts/expenses */
+  --color-system-success: #00FF94; /* For income */
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-system-blue: var(--color-system-blue);
+  --color-system-dark: var(--color-system-dark);
+  --color-system-border: var(--color-system-border);
+  --color-system-danger: var(--color-system-danger);
+  --color-system-success: var(--color-system-success);
+  
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), sans-serif;
+  overflow-x: hidden;
+}
+
+/* Custom Utilities for "System" Feel */
+@layer utilities {
+  .system-card {
+    background: rgba(11, 14, 20, 0.85);
+    border: 1px solid rgba(0, 163, 255, 0.15);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+  }
+
+  .system-glow {
+    box-shadow: 0 0 15px rgba(0, 163, 255, 0.15);
+  }
+  
+  .text-glow {
+    text-shadow: 0 0 10px rgba(0, 163, 255, 0.5);
+  }
+}

@@ -1,0 +1,783 @@
+"use client";
+
+import { motion, AnimatePresence } from "framer-motion";
+import { SystemCard } from "@/components/ui/SystemCard";
+import { SystemButton } from "@/components/ui/SystemButton";
+import { SystemInput } from "@/components/ui/SystemInput";
+import { useState, useEffect, useMemo } from "react";
+import { TrendingUp, TrendingDown, Shield, Plus, DollarSign, Wallet, History, Users, X, Calendar, LogOut, CreditCard, Settings, Trash2, PiggyBank, Target, QrCode, Banknote, Landmark } from "lucide-react";
+import { addTransaction, getTransactions, deleteTransaction, editTransaction } from "@/app/actions/transactions";
+import { getUserSettings, getRecurringExpenses, updateSalary, addRecurringExpense, deleteRecurringExpense, getCategoryGoals, upsertCategoryGoal, deleteCategoryGoal } from "@/app/actions/settings";
+import { getCards, addCard, deleteCard } from "@/app/actions/cards";
+import { useAuth } from "@/lib/context/AuthContext";
+import { useRouter } from "next/navigation";
+
+const CATEGORIES = [
+    { label: "Mercado", icon: "🛒" },
+    { label: "Restaurante", icon: "🍕" },
+    { label: "Transporte", icon: "🚗" },
+    { label: "Fixo/Lazer", icon: "🏠" },
+    { label: "Saúde", icon: "🏥" },
+    { label: "Outros", icon: "✨" },
+];
+
+const MONTHS = [
+    "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+    "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
+];
+
+export default function Dashboard() {
+    const { user, logout } = useAuth();
+    const router = useRouter();
+
+    const [transactions, setTransactions] = useState<any[]>([]);
+    const [salaries, setSalaries] = useState<{ player: string, salary: number }[]>([]);
+    const [recurring, setRecurring] = useState<any[]>([]);
+    const [goals, setGoals] = useState<any[]>([]);
+    const [cards, setCards] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [showModal, setShowModal] = useState<"income" | "expense" | "settings" | "edit" | null>(null);
+
+    // States for the form
+    const [amount, setAmount] = useState("");
+    const [description, setDescription] = useState("");
+    const [installments, setInstallments] = useState("1");
+    const [selectedCategory, setSelectedCategory] = useState("Outros");
+    const [paymentMethod, setPaymentMethod] = useState("pix");
+    const [editingId, setEditingId] = useState<string | null>(null);
+    const [selectedCardId, setSelectedCardId] = useState("");
+    const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+
+    // Auto-update date logic for Credit Cards
+    useEffect(() => {
+        if (paymentMethod === 'credit' && selectedCardId) {
+            const card = cards.find(c => c.id === selectedCardId);
+            if (card && card.closing_day) {
+                const today = new Date();
+                const currentDay = today.getDate();
+
+                // If today is after closing day, suggest next month
+                if (currentDay > card.closing_day) {
+                    const nextMonth = new Date(today);
+                    nextMonth.setMonth(nextMonth.getMonth() + 1);
+                    nextMonth.setDate(1); // Set to 1st of next month or keep day? User said "launched in April". usually 1st is safer or same day next month. Let's use 1st to ensure it falls in the month.
+                    // Actually, if I buy on 30th March and closing is 23rd, it goes to April bill.
+                    // Ideally the transaction date matches the purchase date, but the "Billing Month" is April.
+                    // However, the user asked: "essa conta deve ser lançada em abril". 
+                    // This implies shifting the TRANSACTION record to April so it affects April's stats.
+                    setDate(nextMonth.toISOString().split('T')[0]);
+                } else {
+                    setDate(new Date().toISOString().split('T')[0]);
+                }
+            }
+        }
+    }, [paymentMethod, selectedCardId, cards]);
+
+
+    // Settings States
+    const [vitorSalary, setVitorSalary] = useState("0");
+    const [mariSalary, setMariSalary] = useState("0");
+    const [newRecDesc, setNewRecDesc] = useState("");
+    const [newRecAmount, setNewRecAmount] = useState("");
+    const [newGoalCat, setNewGoalCat] = useState("Mercado");
+    const [newGoalPercent, setNewGoalPercent] = useState("");
+
+    // Card Settings States
+    const [newCardName, setNewCardName] = useState("");
+    const [newCardType, setNewCardType] = useState("credit");
+    const [newCardClosing, setNewCardClosing] = useState("");
+    const [newCardDue, setNewCardDue] = useState("");
+
+    // Filtering states
+    const now = new Date();
+    const [selectedMonth, setSelectedMonth] = useState(now.getUTCMonth());
+    const [selectedYear, setSelectedYear] = useState(now.getUTCFullYear());
+    // const [filterUser, setFilterUser] = useState<string>("Todos"); // Removed as per new logic
+
+    // Constants
+    // const salary = 5000; // This could also come from DB later - Removed as per new logic
+
+    useEffect(() => {
+        if (!user) {
+            router.push("/");
+            return;
+        }
+        fetchData();
+    }, [user]);
+
+    async function fetchData() {
+        setLoading(true);
+        const [tData, sData, rData, gData, cData] = await Promise.all([
+            getTransactions(),
+            getUserSettings(),
+            getRecurringExpenses(),
+            getCategoryGoals(),
+            getCards()
+        ]);
+        setTransactions(tData);
+        setSalaries(sData);
+        setRecurring(rData);
+        setGoals(gData);
+        setCards(cData);
+
+        const vSalary = sData.find(s => s.player === "Vitor")?.salary || 0;
+        const mSalary = sData.find(s => s.player === "Mariana")?.salary || 0;
+        setVitorSalary(vSalary.toString());
+        setMariSalary(mSalary.toString());
+
+        setLoading(false);
+    }
+
+
+    const handleAdd = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!amount || parseFloat(amount) <= 0 || !user) return;
+
+        setLoading(true);
+
+        const finalAmount = (showModal === "expense" || (showModal === "edit" && parseFloat(amount) > 0 && editingId && transactions.find(t => t.id === editingId)?.amount < 0))
+            ? -parseFloat(amount)
+            : parseFloat(amount);
+
+        if (editingId) {
+            const isExpense = showModal === "expense";
+            await editTransaction(editingId, {
+                player: user.name,
+                amount: isExpense ? -Math.abs(parseFloat(amount)) : Math.abs(parseFloat(amount)),
+                category: selectedCategory,
+                description: description || selectedCategory,
+                is_fixed: selectedCategory === "Fixo/Lazer",
+                installments: parseInt(installments) || 1,
+                payment_method: showModal === 'income' ? undefined : paymentMethod,
+                card_id: (paymentMethod === 'credit' || paymentMethod === 'debit') ? selectedCardId : undefined,
+                date: date
+            });
+        } else {
+            // ... (keep existing add logic)
+            await addTransaction({
+                player: user.name,
+                amount: finalAmount,
+                category: selectedCategory,
+                description: description || selectedCategory,
+                is_fixed: selectedCategory === "Fixo/Lazer",
+                installments: parseInt(installments) || 1,
+                payment_method: showModal === 'income' ? undefined : paymentMethod,
+                card_id: (paymentMethod === 'credit' || paymentMethod === 'debit') ? selectedCardId : undefined,
+                date: date
+            });
+        }
+
+        setAmount("");
+        setDescription("");
+        setInstallments("1");
+        setEditingId(null);
+        setShowModal(null);
+        setDate(new Date().toISOString().split('T')[0]);
+        await fetchData();
+    };
+
+    const handleDelete = async () => {
+        if (!editingId) return;
+        if (confirm("Tem certeza? Se for parcelado, TODAS as parcelas serão apagadas.")) {
+            setLoading(true);
+            await deleteTransaction(editingId);
+            setEditingId(null);
+            setShowModal(null);
+            await fetchData();
+        }
+    }
+
+    const openEdit = (t: any) => {
+        setAmount(Math.abs(t.amount).toString());
+        // Clean description from potential installment tag for editing clarity? 
+        // Or keep it? If we keep "Item (1/10)" and save as 12 installments, it might become "Item (1/10) (1/12)".
+        // We should strip the tag.
+        const descMatch = t.description?.match(/^(.*) \(\d+\/\d+\)$/);
+        const cleanDesc = descMatch ? descMatch[1] : (t.description || t.category);
+        const installMatch = t.description?.match(/\(\d+\/(\d+)\)/);
+
+        setDescription(cleanDesc);
+        setInstallments(installMatch ? installMatch[1] : "1");
+        setSelectedCategory(t.category);
+        setEditingId(t.id);
+        setDate(new Date(t.created_at).toISOString().split('T')[0]);
+
+        // Load Payment info if any
+        if (t.payment_method) setPaymentMethod(t.payment_method);
+        if (t.card_id) setSelectedCardId(t.card_id);
+
+        setShowModal(t.amount < 0 ? "expense" : "income");
+    }
+
+    const handleAddCard = async () => {
+        if (!newCardName || !user) return;
+        await addCard({
+            player: user.name,
+            name: newCardName,
+            type: newCardType as any,
+            closing_day: newCardClosing ? parseInt(newCardClosing) : undefined,
+            due_day: newCardDue ? parseInt(newCardDue) : undefined
+        });
+        setNewCardName("");
+        setNewCardClosing("");
+        setNewCardDue("");
+        await fetchData();
+    };
+
+    const handleUpdateSalaries = async () => {
+        await updateSalary("Vitor", parseFloat(vitorSalary));
+        await updateSalary("Mariana", parseFloat(mariSalary));
+        await fetchData();
+    };
+
+    const handleAddRecurring = async () => {
+        if (!newRecDesc || !newRecAmount) return;
+        await addRecurringExpense({
+            description: newRecDesc,
+            amount: parseFloat(newRecAmount),
+            player: user?.name || "Sistema"
+        });
+        setNewRecDesc("");
+        setNewRecAmount("");
+        await fetchData();
+    };
+
+    const handleUpsertGoal = async () => {
+        if (!newGoalCat || !newGoalPercent) return;
+        await upsertCategoryGoal(newGoalCat, parseFloat(newGoalPercent));
+        setNewGoalPercent("");
+        await fetchData();
+    };
+
+    // Filtered Data
+    const filteredTransactions = useMemo(() => {
+        return transactions.filter(t => {
+            const d = new Date(t.created_at);
+            const mMatch = d.getUTCMonth() === selectedMonth;
+            const yMatch = d.getUTCFullYear() === selectedYear;
+            // const uMatch = filterUser === "Todos" || t.player === filterUser; // Removed as per new logic
+            return mMatch && yMatch; // && uMatch;
+        });
+    }, [transactions, selectedMonth, selectedYear]); // Removed filterUser from dependencies
+
+    const totalSpent = Math.abs(
+        filteredTransactions
+            .filter((t) => t.amount < 0)
+            .reduce((acc, t) => acc + parseFloat(t.amount), 0)
+    );
+
+    const totalIncome = filteredTransactions
+        .filter((t) => t.amount > 0)
+        .reduce((acc, t) => acc + parseFloat(t.amount), 0);
+
+    const totalSalaries = salaries.reduce((acc, s) => acc + parseFloat(s.salary.toString()), 0);
+    const totalRecurring = recurring.reduce((acc, r) => acc + parseFloat(r.amount.toString()), 0);
+
+    const combinedIncome = totalSalaries + totalIncome;
+    const combinedExpenses = totalSpent + totalRecurring;
+    const currentBalance = combinedIncome - combinedExpenses;
+
+    const getSpentByCategory = (catName: string) => {
+        return Math.abs(
+            filteredTransactions
+                .filter((t) => t.category.toLowerCase().includes(catName.toLowerCase()))
+                .reduce((acc, t) => acc + parseFloat(t.amount), 0)
+        );
+    };
+
+    if (!user) return null;
+
+    return (
+        <div className="min-h-screen p-4 pb-32 relative bg-black text-white">
+            {/* Background Blur Effect */}
+            <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[300px] h-[300px] bg-system-blue/10 blur-[120px] pointer-events-none" />
+
+            {/* Header */}
+            <div className="relative z-10 flex justify-between items-start mb-6 pt-2">
+                <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full border border-system-blue/50 flex items-center justify-center bg-system-blue/5">
+                        <Users size={20} className="text-system-blue" />
+                    </div>
+                    <div>
+                        <p className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Jogadores</p>
+                        <h2 className="text-sm font-bold">Vitor & Mariana</h2>
+                    </div>
+                </div>
+                <div className="flex gap-2">
+                    <button onClick={() => setShowModal("settings")} className="p-2 text-gray-500 hover:text-system-blue animate-pulse"><Settings size={20} /></button>
+                    <button onClick={() => { logout(); router.push("/"); }} className="p-2 text-gray-500 hover:text-system-danger"><LogOut size={20} /></button>
+                </div>
+            </div>
+
+            {/* Monthly Filter Bar */}
+            <div className="relative z-10 flex gap-2 overflow-x-auto pb-4 no-scrollbar mb-4">
+                <div className="flex bg-system-dark/50 border border-system-border rounded-lg p-1">
+                    <select
+                        value={selectedMonth}
+                        onChange={(e) => setSelectedMonth(parseInt(e.target.value))}
+                        className="bg-transparent text-xs font-bold uppercase py-1 px-2 outline-none cursor-pointer border-r border-system-border"
+                    >
+                        {MONTHS.map((m, i) => (
+                            <option key={m} value={i} className="bg-system-dark">{m}</option>
+                        ))}
+                    </select>
+                    <select
+                        value={selectedYear}
+                        onChange={(e) => setSelectedYear(parseInt(e.target.value))}
+                        className="bg-transparent text-xs font-bold py-1 px-2 outline-none cursor-pointer"
+                    >
+                        {[2024, 2025, 2026].map(y => (
+                            <option key={y} value={y} className="bg-system-dark">{y}</option>
+                        ))}
+                    </select>
+                </div>
+
+                {/* Removed filterUser dropdown */}
+                {/* <div className="flex bg-system-dark/50 border border-system-border rounded-lg p-1">
+                    <select
+                        value={filterUser}
+                        onChange={(e) => setFilterUser(e.target.value)}
+                        className="bg-transparent text-xs font-bold uppercase py-1 px-2 outline-none cursor-pointer"
+                    >
+                        <option value="Todos" className="bg-system-dark">TUDO</option>
+                        <option value="Vitor" className="bg-system-dark">VITOR</option>
+                        <option value="Mariana" className="bg-system-dark">MARIANA</option>
+                    </select>
+                </div> */}
+            </div>
+
+            {/* Main Combined Stats */}
+            <div className="grid grid-cols-1 gap-4 mb-6 relative z-10">
+                <SystemCard title="Status do Casal" glow>
+                    <div className="space-y-6">
+                        <div className="grid grid-cols-2 gap-4 border-b border-system-border/30 pb-4">
+                            <div>
+                                <p className="text-[9px] text-gray-500 uppercase font-black tracking-widest mb-1">Renda Total</p>
+                                <p className="text-xl font-bold text-system-success">R$ {combinedIncome.toFixed(2)}</p>
+                            </div>
+                            <div className="text-right">
+                                <p className="text-[9px] text-gray-500 uppercase font-black tracking-widest mb-1">Gasto Total (Variável + Fixo)</p>
+                                <p className="text-xl font-bold text-system-danger">R$ {combinedExpenses.toFixed(2)}</p>
+                            </div>
+                        </div>
+
+                        <div className="flex justify-between items-center">
+                            <div className="flex items-center gap-3">
+                                <div className="p-2 bg-system-blue/10 rounded-lg">
+                                    <PiggyBank className="text-system-blue" size={24} />
+                                </div>
+                                <div>
+                                    <p className="text-[9px] text-gray-500 uppercase font-black tracking-widest">O Cofre (Saldo)</p>
+                                    <p className={`text-2xl font-black ${currentBalance < 0 ? 'text-system-danger' : 'text-white text-glow'}`}>
+                                        R$ {currentBalance.toFixed(2)}
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="text-right">
+                                <p className="text-[10px] text-system-blue font-bold uppercase tracking-tighter">
+                                    {combinedIncome > 0 ? ((currentBalance / combinedIncome) * 100).toFixed(0) : 0}% Economizado
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="w-full bg-system-dark/50 border border-system-border h-2 rounded-full overflow-hidden">
+                            <motion.div
+                                initial={{ width: 0 }}
+                                animate={{ width: `${Math.max(0, Math.min((currentBalance / combinedIncome) * 100, 100))}%` }}
+                                className="h-full bg-system-blue shadow-[0_0_15px_#00a3ff]"
+                            />
+                        </div>
+                    </div>
+                </SystemCard>
+
+                {/* Dynamic Goals */}
+                <div className="grid grid-cols-2 gap-4">
+                    {goals.map((goal) => {
+                        const budget = totalSalaries * (goal.percentage / 100);
+                        const spent = getSpentByCategory(goal.category);
+                        const percent = Math.min((spent / budget) * 100, 100);
+                        const isOver = spent > budget;
+
+                        return (
+                            <SystemCard key={goal.id} className="p-4" title={`${goal.category} (${goal.percentage}%)`}>
+                                <div className="flex justify-between items-baseline mb-1">
+                                    <p className={`text-lg font-bold ${isOver ? 'text-system-danger' : 'text-system-blue'}`}>
+                                        R$ {spent.toFixed(0)}
+                                    </p>
+                                    <span className="text-[10px] text-gray-600">Limite R$ {budget.toFixed(0)}</span>
+                                </div>
+                                <div className="w-full bg-system-dark border border-system-border h-1 rounded-full overflow-hidden">
+                                    <motion.div
+                                        animate={{ width: `${percent}%` }}
+                                        className={`h-full ${isOver ? 'bg-system-danger' : 'bg-system-blue'}`}
+                                    />
+                                </div>
+                            </SystemCard>
+                        );
+                    })}
+                </div>
+            </div>
+
+            {/* Simple History */}
+            <div className="mt-4 relative z-10">
+                <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-gray-500 mb-4 flex items-center gap-2">
+                    <History size={14} /> Movimentações Recentes
+                </h3>
+                <div className="space-y-2">
+                    {filteredTransactions.slice(0, 10).map((t) => {
+                        const date = new Date(t.created_at);
+                        const dateStr = date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+                        const timeStr = date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+                        // Icon mapping based on t.payment_method and t.card_id
+                        let PaymentIcon = null;
+                        if (t.payment_method === 'pix') PaymentIcon = <QrCode size={12} className="text-emerald-400" />;
+                        else if (t.payment_method === 'cash') PaymentIcon = <Banknote size={12} className="text-green-400" />;
+                        else if (t.payment_method === 'credit' || t.payment_method === 'debit') {
+                            const card = cards.find(c => c.id === t.card_id);
+                            PaymentIcon = <div className="flex items-center gap-1"><CreditCard size={12} className="text-system-blue" /> <span className="text-[8px] uppercase">{card ? card.name : t.payment_method}</span></div>;
+                        }
+
+                        return (
+                            <div key={t.id} className="system-card p-4 rounded-2xl flex justify-between items-center bg-system-dark/30 border border-transparent hover:border-system-blue/20 transition-all group">
+                                <div className="flex items-center gap-4">
+                                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center border border-white/5 ${t.amount > 0 ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>
+                                        <span className="text-2xl">{CATEGORIES.find(c => c.label === t.category)?.icon || "💰"}</span>
+                                    </div>
+                                    <div>
+                                        <p className="text-white text-sm font-bold uppercase tracking-tight mb-1">{t.description || t.category}</p>
+                                        <div className="flex items-center gap-2 text-[10px] font-mono text-gray-500 uppercase">
+                                            <span className="text-system-blue font-bold">{t.player}</span>
+                                            <span className="w-1 h-1 rounded-full bg-gray-700" />
+                                            <span>{dateStr}</span>
+                                            <span className="w-1 h-1 rounded-full bg-gray-700" />
+                                            <span>{timeStr}</span>
+                                            {PaymentIcon && (
+                                                <>
+                                                    <span className="w-1 h-1 rounded-full bg-gray-700" />
+                                                    <div className="flex items-center gap-1 bg-white/5 px-1.5 py-0.5 rounded text-gray-300">
+                                                        {PaymentIcon}
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center gap-6">
+                                    <span className={`font-mono font-bold text-lg ${t.amount > 0 ? 'text-emerald-500' : 'text-white'}`}>
+                                        {t.amount > 0 ? '+' : '-'} R$ {Math.abs(t.amount).toFixed(2)}
+                                    </span>
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); openEdit(t); }}
+                                        className="p-2 text-gray-600 hover:text-system-blue hover:bg-system-blue/10 rounded-lg transition-all"
+                                        title="Editar Transação"
+                                    >
+                                        <Settings size={18} />
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+
+            {/* Recurring Expenses Section */}
+            <div className="mt-8 relative z-10 mb-20">
+                <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-gray-500 mb-4 flex items-center gap-2">
+                    <Calendar size={14} /> Compromissos Fixos (Mensais)
+                </h3>
+                <div className="space-y-2">
+                    {recurring.map((r) => (
+                        <div key={r.id} className="system-card p-4 rounded-xl flex justify-between items-center bg-system-dark/20 border border-white/5 opacity-80">
+                            <div className="flex items-center gap-4">
+                                <div className="p-2 bg-gray-800 rounded-lg text-gray-400">
+                                    <CreditCard size={18} />
+                                </div>
+                                <div>
+                                    <p className="text-gray-300 text-sm font-bold uppercase tracking-tight">{r.description}</p>
+                                    <p className="text-[9px] text-gray-500 uppercase">{r.player}</p>
+                                </div>
+                            </div>
+                            <span className="font-mono font-bold text-gray-400">
+                                - R$ {parseFloat(r.amount).toFixed(2)}
+                            </span>
+                        </div>
+                    ))}
+                    {recurring.length === 0 && (
+                        <p className="text-xs text-gray-600 italic pl-2">Nenhum gasto fixo cadastrado.</p>
+                    )}
+                </div>
+            </div>
+
+            {/* Floating Actions */}
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 w-full max-w-sm px-4 flex gap-3 z-40">
+                <SystemButton onClick={() => setShowModal("income")} variant="primary" className="flex-1 shadow-2xl">
+                    <TrendingUp size={18} className="mr-2 inline" /> Ganho
+                </SystemButton>
+                <SystemButton onClick={() => setShowModal("expense")} variant="danger" className="flex-1 shadow-2xl">
+                    <TrendingDown size={18} className="mr-2 inline" /> Gasto
+                </SystemButton>
+            </div>
+
+            {/* Modals */}
+            <AnimatePresence>
+                {showModal === 'settings' && (
+                    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+                        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/90 backdrop-blur-md" onClick={() => setShowModal(null)} />
+                        <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-system-dark border-t border-system-blue/30 p-6 sm:rounded-2xl h-[85vh] flex flex-col">
+                            <div className="flex justify-between items-center mb-6 shrink-0">
+                                <h2 className="text-white font-black tracking-widest uppercase flex items-center gap-2 text-sm"><Settings size={16} /> Configurações do Sistema</h2>
+                                <button onClick={() => setShowModal(null)}><X size={20} /></button>
+                            </div>
+
+                            <div className="space-y-8 overflow-y-auto no-scrollbar pb-6 flex-1">
+                                {/* 1. Salaries */}
+                                <div className="space-y-4">
+                                    <p className="text-[10px] text-system-blue font-black uppercase tracking-widest border-b border-system-blue/20 pb-2 flex items-center gap-2">
+                                        <Wallet size={12} /> Salários (Renda Mensal)
+                                    </p>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <SystemInput label="Vitor" type="number" value={vitorSalary} onChange={e => setVitorSalary(e.target.value)} />
+                                        <SystemInput label="Mariana" type="number" value={mariSalary} onChange={e => setMariSalary(e.target.value)} />
+                                    </div>
+                                    <SystemButton variant="outline" className="w-full" onClick={handleUpdateSalaries}>Salvar Salários</SystemButton>
+                                </div>
+
+                                {/* 2. Cards (The Arsenal) */}
+                                <div className="space-y-4">
+                                    <p className="text-[10px] text-system-blue font-black uppercase tracking-widest border-b border-system-blue/20 pb-2 flex items-center gap-2">
+                                        <CreditCard size={12} /> Carteira & Cartões
+                                    </p>
+                                    <div className="space-y-2">
+                                        {cards.filter(c => c.player === user.name).map(c => (
+                                            <div key={c.id} className="flex justify-between items-center p-3 bg-black/40 border border-system-border rounded-lg">
+                                                <div className="flex items-center gap-3">
+                                                    <CreditCard size={16} className={c.type === 'credit' ? 'text-system-blue' : 'text-emerald-500'} />
+                                                    <div>
+                                                        <p className="text-xs text-white uppercase font-bold">{c.name}</p>
+                                                        <p className="text-[9px] text-gray-500 uppercase">{c.type === 'both' ? 'Crédito/Débito' : c.type === 'credit' ? 'Crédito' : 'Débito'} {c.closing_day ? `• Fecha dia ${c.closing_day}` : ''}</p>
+                                                    </div>
+                                                </div>
+                                                <button onClick={async () => { await deleteCard(c.id); await fetchData(); }} className="text-gray-600 hover:text-system-danger"><Trash2 size={14} /></button>
+                                            </div>
+                                        ))}
+                                        {cards.filter(c => c.player === user.name).length === 0 && <p className="text-xs text-gray-600 italic">Nenhum cartão cadastrado.</p>}
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <input placeholder="Nome (Ex: Nubank)" value={newCardName} onChange={e => setNewCardName(e.target.value)} className="col-span-2 bg-black/40 border border-system-border rounded-lg p-3 text-xs outline-none focus:border-system-blue text-white" />
+                                        <select value={newCardType} onChange={e => setNewCardType(e.target.value)} className="bg-black/40 border border-system-border rounded-lg p-3 text-xs outline-none text-white appearance-none">
+                                            <option value="credit">Crédito</option>
+                                            <option value="debit">Débito</option>
+                                            <option value="both">Ambos</option>
+                                        </select>
+                                        <div className="flex gap-1 col-span-1">
+                                            <input placeholder="Fech." type="number" value={newCardClosing} onChange={e => setNewCardClosing(e.target.value)} className="w-1/2 bg-black/40 border border-system-border rounded-lg p-3 text-xs outline-none focus:border-system-blue text-white text-center" />
+                                            <input placeholder="Venc." type="number" value={newCardDue} onChange={e => setNewCardDue(e.target.value)} className="w-1/2 bg-black/40 border border-system-border rounded-lg p-3 text-xs outline-none focus:border-system-blue text-white text-center" />
+                                        </div>
+                                        <button onClick={handleAddCard} className="col-span-2 bg-system-blue/10 border border-system-blue p-3 rounded-lg text-system-blue flex justify-center items-center gap-2"><Plus size={14} /> Adicionar Cartão</button>
+                                    </div>
+                                </div>
+
+                                {/* 3. Category Goals */}
+                                <div className="space-y-4">
+                                    <p className="text-[10px] text-system-blue font-black uppercase tracking-widest border-b border-system-blue/20 pb-2 flex items-center gap-2">
+                                        <Target size={12} /> Metas de Categoria (%)
+                                    </p>
+                                    <div className="space-y-2">
+                                        {goals.map(g => (
+                                            <div key={g.id} className="flex justify-between items-center p-3 bg-black/40 border border-system-border rounded-lg">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-lg">{CATEGORIES.find(c => c.label === g.category)?.icon || "🎯"}</span>
+                                                    <p className="text-xs text-white uppercase font-bold">{g.category}</p>
+                                                </div>
+                                                <div className="flex items-center gap-3">
+                                                    <p className="text-xs font-bold text-system-blue">{g.percentage}%</p>
+                                                    <button onClick={async () => { await deleteCategoryGoal(g.id); await fetchData(); }} className="text-gray-600 hover:text-system-danger"><Trash2 size={14} /></button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <div className="flex-1 bg-black/40 border border-system-border rounded-lg p-1">
+                                            <select value={newGoalCat} onChange={e => setNewGoalCat(e.target.value)} className="w-full bg-transparent text-xs text-white outline-none p-2">
+                                                {CATEGORIES.map(c => <option key={c.label} value={c.label} className="bg-system-dark">{c.icon} {c.label}</option>)}
+                                            </select>
+                                        </div>
+                                        <input placeholder="%" type="number" value={newGoalPercent} onChange={e => setNewGoalPercent(e.target.value)} className="bg-black/40 border border-system-border rounded-lg p-3 text-xs w-16 outline-none focus:border-system-blue text-white" />
+                                        <button onClick={handleUpsertGoal} className="bg-system-blue/10 border border-system-blue p-3 rounded-lg text-system-blue"><Plus size={18} /></button>
+                                    </div>
+                                </div>
+
+                                {/* 4. Recurring */}
+                                <div className="space-y-4">
+                                    <p className="text-[10px] text-system-blue font-black uppercase tracking-widest border-b border-system-blue/20 pb-2 flex items-center gap-2">
+                                        <Calendar size={12} /> Gastos Fixos (Automação)
+                                    </p>
+                                    <div className="space-y-2">
+                                        {recurring.map(r => (
+                                            <div key={r.id} className="flex justify-between items-center p-3 bg-black/40 border border-system-border rounded-lg">
+                                                <p className="text-xs text-white">{r.description}</p>
+                                                <div className="flex items-center gap-3">
+                                                    <p className="text-xs font-bold text-system-danger">R$ {parseFloat(r.amount).toFixed(2)}</p>
+                                                    <button onClick={async () => { await deleteRecurringExpense(r.id); await fetchData(); }} className="text-gray-600 hover:text-system-danger"><Trash2 size={14} /></button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <input placeholder="Desc: Aluguel" value={newRecDesc} onChange={e => setNewRecDesc(e.target.value)} className="bg-black/40 border border-system-border rounded-lg p-3 text-xs flex-1 outline-none focus:border-system-blue text-white" />
+                                        <input placeholder="R$ 0,00" type="number" value={newRecAmount} onChange={e => setNewRecAmount(e.target.value)} className="bg-black/40 border border-system-border rounded-lg p-3 text-xs w-24 outline-none focus:border-system-blue text-white" />
+                                        <button onClick={handleAddRecurring} className="bg-system-blue/10 border border-system-blue p-3 rounded-lg text-system-blue"><Plus size={18} /></button>
+                                    </div>
+                                </div>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+
+                {(showModal === 'income' || showModal === 'expense' || showModal === 'edit') && (
+                    <div className="fixed inset-0 z-50 flex items-end justify-center p-0">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="absolute inset-0 bg-black/90 backdrop-blur-md"
+                            onClick={() => setShowModal(null)}
+                        />
+                        <motion.div
+                            initial={{ y: "100%" }}
+                            animate={{ y: 0 }}
+                            exit={{ y: "100%" }}
+                            transition={{ type: "spring", damping: 25, stiffness: 200 }}
+                            className="relative w-full max-w-md bg-system-dark border-t border-system-blue/30 p-6 max-h-[90vh] overflow-y-auto"
+                        >
+                            <form onSubmit={handleAdd} className="space-y-6">
+                                <div>
+                                    <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-2">{showModal === 'income' ? 'Valor da Recompensa' : 'Valor do Gasto de Missão'}</p>
+                                    <input
+                                        autoFocus
+                                        type="number"
+                                        step="0.01"
+                                        required
+                                        className="w-full bg-transparent text-5xl font-black text-white outline-none border-b border-system-border focus:border-system-blue transition-all"
+                                        placeholder="0,00"
+                                        value={amount}
+                                        onChange={(e) => setAmount(e.target.value)}
+                                    />
+                                </div>
+
+                                {(showModal === 'expense' || (showModal === 'edit' && parseFloat(amount) < 0)) && (
+                                    <div className="space-y-3">
+                                        <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest">Método de Pagamento</p>
+                                        <div className="flex gap-2 bg-black/20 p-1 rounded-lg">
+                                            {[
+                                                { id: 'pix', label: 'Pix', icon: <QrCode size={16} /> },
+                                                { id: 'cash', label: 'Dinheiro', icon: <Banknote size={16} /> },
+                                                { id: 'credit', label: 'Crédito', icon: <CreditCard size={16} /> },
+                                                { id: 'debit', label: 'Débito', icon: <CreditCard size={16} /> }
+                                            ].map(m => (
+                                                <button
+                                                    type="button"
+                                                    key={m.id}
+                                                    onClick={() => setPaymentMethod(m.id)}
+                                                    className={`flex-1 flex flex-col items-center gap-1 p-2 rounded-md transition-all ${paymentMethod === m.id ? 'bg-system-blue text-white shadow-lg' : 'text-gray-500 hover:text-white'}`}
+                                                >
+                                                    {m.icon}
+                                                    <span className="text-[9px] font-bold uppercase">{m.label}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+
+                                        {(paymentMethod === 'credit' || paymentMethod === 'debit') && (
+                                            <div className="animate-in fade-in slide-in-from-top-2">
+                                                <select
+                                                    value={selectedCardId}
+                                                    onChange={e => setSelectedCardId(e.target.value)}
+                                                    className="w-full bg-black/40 border border-system-border rounded-lg p-3 text-white outline-none text-xs font-bold"
+                                                    required
+                                                >
+                                                    <option value="">Selecione o Cartão...</option>
+                                                    {cards.filter(c => c.player === user.name && (c.type === 'both' || c.type === paymentMethod)).map(c => (
+                                                        <option key={c.id} value={c.id}>{c.name} {c.closing_day ? `(Fecha dia ${c.closing_day})` : ''}</option>
+                                                    ))}
+                                                </select>
+                                                {cards.filter(c => c.player === user.name).length === 0 && (
+                                                    <p className="text-[10px] text-system-danger mt-1">🔴 Você não tem cartões cadastrados. Vá em Configurações ⚙️.</p>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                <div className="flex gap-2">
+                                    <div className="w-1/3">
+                                        <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-2">Data</p>
+                                        <input
+                                            type="date"
+                                            className="w-full bg-black/40 border border-system-border rounded-lg p-4 text-white uppercase text-xs font-bold outline-none focus:border-system-blue [color-scheme:dark]"
+                                            value={date}
+                                            onChange={e => setDate(e.target.value)}
+                                        />
+                                    </div>
+                                    <div className="flex-1">
+                                        <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-2">Descrição</p>
+                                        <input
+                                            type="text"
+                                            placeholder={showModal === 'income' ? 'Ex: Freela Design' : 'Ex: Jantar Outback'}
+                                            className="w-full bg-black/40 border border-system-border rounded-lg p-4 text-white placeholder-gray-600 outline-none focus:border-system-blue transition-all font-bold"
+                                            value={description}
+                                            onChange={(e) => setDescription(e.target.value)}
+                                        />
+                                    </div>
+                                    <div className="w-24">
+                                        <p className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-2">Parcelas</p>
+                                        <input
+                                            type="number"
+                                            min="1"
+                                            className="w-full bg-black/40 border border-system-border rounded-lg p-4 text-center text-white outline-none focus:border-system-blue transition-all font-bold"
+                                            value={installments}
+                                            onChange={(e) => setInstallments(e.target.value)}
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-2">
+                                    {CATEGORIES.map((cat) => (
+                                        <button
+                                            key={cat.label}
+                                            type="button"
+                                            onClick={() => setSelectedCategory(cat.label)}
+                                            className={`flex flex-col items-center gap-1 p-3 rounded-xl border transition-all ${selectedCategory === cat.label
+                                                ? 'bg-system-blue/20 border-system-blue text-system-blue'
+                                                : 'bg-black/40 border-system-border text-gray-600'
+                                                }`}
+                                        >
+                                            <span className="text-xl">{cat.icon}</span>
+                                            <span className="text-[9px] font-black uppercase">{cat.label}</span>
+                                        </button>
+                                    ))}
+                                </div>
+
+                                <div className="flex gap-3">
+                                    {editingId && (
+                                        <button
+                                            type="button"
+                                            onClick={handleDelete}
+                                            className="bg-system-danger/20 border border-system-danger text-system-danger p-5 rounded-lg"
+                                        >
+                                            <Trash2 size={24} />
+                                        </button>
+                                    )}
+                                    <SystemButton type="submit" variant={showModal === 'income' ? 'primary' : 'danger'} className="flex-1 py-5 text-xl uppercase font-black">
+                                        {editingId ? 'Salvar Alterações' : 'Confirmar Registro'}
+                                    </SystemButton>
+                                </div>
+                            </form>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+        </div>
+    );
+}
