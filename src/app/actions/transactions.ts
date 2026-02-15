@@ -12,36 +12,39 @@ export async function addTransaction(transaction: {
     installments?: number;
     payment_method?: string;
     card_id?: string;
-    date?: string; // YYYY-MM-DD
+    date?: string; // Purchase Date (YYYY-MM-DD)
+    competence_date?: string; // Billing Date (YYYY-MM-DD)
 }) {
-    const { player, amount, category, description, is_fixed, installments = 1, payment_method, card_id, date } = transaction;
+    const {
+        player,
+        amount,
+        category,
+        description,
+        is_fixed,
+        installments = 1,
+        payment_method,
+        card_id,
+        date: purchaseDateStr,
+        competence_date: competenceDateStr
+    } = transaction;
+
     const transactionsToAdd = [];
-    const baseDate = date ? new Date(date) : new Date();
-    // Adjust time to current time if date is today, or noon if future? 
-    // Actually, if user picks a date, we probably want to keep the time or just set to noon to avoid timezone issues.
-    // Let's create a date object that preserves the selected YYYY-MM-DD.
-    // Since input type='date' returns YYYY-MM-DD, new Date('YYYY-MM-DD') creates UTC midnight. 
-    // We want local time roughly. Let's append T12:00:00 to be safe or just use the date as is.
-    if (date) {
-        // If specific date provided, add time to make it ISO
-        const [y, m, d] = date.split('-').map(Number);
-        baseDate.setFullYear(y, m - 1, d);
-        // Keep current time if it's today, otherwise set to fixed time? 
-        // Let's just keep the time components from 'now' to imply the transaction happened 'at this time' on that day.
-        const now = new Date();
-        baseDate.setHours(now.getHours(), now.getMinutes(), now.getSeconds());
-    }
+    const basePurchaseDate = purchaseDateStr ? new Date(purchaseDateStr + 'T12:00:00') : new Date();
+    const baseCompetenceDate = competenceDateStr ? new Date(competenceDateStr + 'T12:00:00') : new Date(basePurchaseDate);
 
     // Generate a group ID if this is an installment purchase
     const installment_group_id = installments > 1 ? crypto.randomUUID() : null;
 
     for (let i = 0; i < installments; i++) {
-        const date = new Date(baseDate);
-        date.setMonth(date.getMonth() + i);
+        const pDate = new Date(basePurchaseDate);
+        pDate.setMonth(pDate.getMonth() + i);
+
+        const cDate = new Date(baseCompetenceDate);
+        cDate.setMonth(cDate.getMonth() + i);
 
         const desc = installments > 1
             ? `${description || category} (${i + 1}/${installments})`
-            : description;
+            : (description || category);
 
         transactionsToAdd.push({
             player,
@@ -49,7 +52,9 @@ export async function addTransaction(transaction: {
             category,
             description: desc,
             is_fixed,
-            created_at: date.toISOString(),
+            created_at: pDate.toISOString(), // Legacy created_at fallback
+            date: pDate.toISOString().split('T')[0],
+            competence_date: cDate.toISOString().split('T')[0],
             installment_group_id,
             payment_method,
             card_id
@@ -60,6 +65,10 @@ export async function addTransaction(transaction: {
         .from("transactions")
         .insert(transactionsToAdd)
         .select();
+
+    if (error) {
+        console.error("Supabase insert error:", error);
+    }
 
     revalidatePath("/dashboard");
     return { success: !error };

@@ -197,7 +197,10 @@ export default function Dashboard() {
         setInstallments(installMatch ? installMatch[1] : "1");
         setSelectedCategory(t.category);
         setEditingId(t.id);
-        setDate(new Date(t.created_at).toISOString().split('T')[0]);
+
+        // Use t.date string if available, otherwise fallback to created_at
+        const displayDate = t.date || (t.created_at ? new Date(t.created_at).toISOString().split('T')[0] : getToday());
+        setDate(displayDate);
 
         // Load Payment info if any
         if (t.payment_method) setPaymentMethod(t.payment_method);
