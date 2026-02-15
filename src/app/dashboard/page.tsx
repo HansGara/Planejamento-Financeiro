@@ -46,7 +46,14 @@ export default function Dashboard() {
     const [paymentMethod, setPaymentMethod] = useState("pix");
     const [editingId, setEditingId] = useState<string | null>(null);
     const [selectedCardId, setSelectedCardId] = useState("");
-    const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+    // Helper for local date
+    const getToday = () => {
+        const d = new Date();
+        d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+        return d.toISOString().split('T')[0];
+    };
+
+    const [date, setDate] = useState(getToday());
 
     // Auto-update date logic for Credit Cards
     useEffect(() => {
@@ -56,18 +63,36 @@ export default function Dashboard() {
                 const today = new Date();
                 const currentDay = today.getDate();
 
-                // If today is after closing day, suggest next month
+                // If today is after closing day, and we mean to pay next month
                 if (currentDay > card.closing_day) {
                     const nextMonth = new Date(today);
                     nextMonth.setMonth(nextMonth.getMonth() + 1);
-                    nextMonth.setDate(1); // Set to 1st of next month or keep day? User said "launched in April". usually 1st is safer or same day next month. Let's use 1st to ensure it falls in the month.
-                    // Actually, if I buy on 30th March and closing is 23rd, it goes to April bill.
-                    // Ideally the transaction date matches the purchase date, but the "Billing Month" is April.
-                    // However, the user asked: "essa conta deve ser lançada em abril". 
-                    // This implies shifting the TRANSACTION record to April so it affects April's stats.
+                    // Use today's day number in next month, or stick to 1st?
+                    // User complained "always 1st". Let's try to keep the day if valid.
+                    // But billing cycle usually starts after closing. 
+                    // Let's set to: Closing Day + 1? Or just keep "Today" but in next month?
+                    // If I buy on 25th (closing 20th), bill is next month 5th.
+                    // The transaction DATE should probably be the purchase date (25th).
+                    // But the "Competence" is next month. 
+                    // The user wants "data correspondente do dia".
+                    // So: Set date to TODAY.
+                    // But then it filters into "Current Month" dashboard?
+                    // If dashboard filters by `created_at` month, and created_at = Feb 25, it shows in Feb.
+                    // If the user wants it to show in March (bill), date must be March.
+                    // The user said: "data sempre está em 1 de março... em vez de ir para a data correspondente".
+                    // Maybe they mean: "I want it to default to Today (e.g. 15th), not 1st".
+                    // If the logic forces 1st, that's the issue.
+                    // Let's change this logic to: use Today's day, but next month?
+                    // Or simply: DON'T force the date unless user asks?
+                    // User explicitly asked for "automatic... launched in April".
+                    // So: Day = Today, Month = Next.
+                    // If Today is 31st and next month has 30?
+                    // `setMonth(m+1)` handles overflow (31 Jan -> 3 March).
+                    // Let's just use the calculated `nextMonth` date.
+                    nextMonth.setDate(currentDay); // Try to keep the day
                     setDate(nextMonth.toISOString().split('T')[0]);
                 } else {
-                    setDate(new Date().toISOString().split('T')[0]);
+                    setDate(getToday());
                 }
             }
         }
@@ -167,12 +192,15 @@ export default function Dashboard() {
             });
         }
 
+        // Full Reset to prevent persistence issues
         setAmount("");
         setDescription("");
         setInstallments("1");
+        setPaymentMethod("pix");
+        setSelectedCardId("");
         setEditingId(null);
         setShowModal(null);
-        setDate(new Date().toISOString().split('T')[0]);
+        setDate(getToday());
         await fetchData();
     };
 
@@ -230,12 +258,13 @@ export default function Dashboard() {
         await fetchData();
     };
 
-    const handleAddRecurring = async () => {
+    const handleAddRecurring = async (type: "expense" | "income") => {
         if (!newRecDesc || !newRecAmount) return;
         await addRecurringExpense({
             description: newRecDesc,
             amount: parseFloat(newRecAmount),
-            player: user?.name || "Sistema"
+            player: user?.name || "Sistema",
+            type // 'income' or 'expense'
         });
         setNewRecDesc("");
         setNewRecAmount("");
@@ -271,10 +300,13 @@ export default function Dashboard() {
         .reduce((acc, t) => acc + parseFloat(t.amount), 0);
 
     const totalSalaries = salaries.reduce((acc, s) => acc + parseFloat(s.salary.toString()), 0);
-    const totalRecurring = recurring.reduce((acc, r) => acc + parseFloat(r.amount.toString()), 0);
 
-    const combinedIncome = totalSalaries + totalIncome;
-    const combinedExpenses = totalSpent + totalRecurring;
+    // Split recurring
+    const recurringExpenses = recurring.filter(r => r.type !== 'income').reduce((acc, r) => acc + parseFloat(r.amount.toString()), 0);
+    const recurringIncome = recurring.filter(r => r.type === 'income').reduce((acc, r) => acc + parseFloat(r.amount.toString()), 0);
+
+    const combinedIncome = totalSalaries + totalIncome + recurringIncome;
+    const combinedExpenses = totalSpent + recurringExpenses;
     const currentBalance = combinedIncome - combinedExpenses;
 
     const getSpentByCategory = (catName: string) => {
@@ -439,19 +471,19 @@ export default function Dashboard() {
                         }
 
                         return (
-                            <div key={t.id} className="system-card p-4 rounded-2xl flex justify-between items-center bg-system-dark/30 border border-transparent hover:border-system-blue/20 transition-all group">
-                                <div className="flex items-center gap-4">
-                                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center border border-white/5 ${t.amount > 0 ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>
-                                        <span className="text-2xl">{CATEGORIES.find(c => c.label === t.category)?.icon || "💰"}</span>
+                            <div key={t.id} className="system-card p-3 sm:p-4 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center bg-system-dark/30 border border-transparent hover:border-system-blue/20 transition-all group gap-2">
+                                <div className="flex items-start gap-3 w-full sm:w-auto overflow-hidden">
+                                    <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex shrink-0 items-center justify-center border border-white/5 ${t.amount > 0 ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>
+                                        <span className="text-xl sm:text-2xl">{CATEGORIES.find(c => c.label === t.category)?.icon || "💰"}</span>
                                     </div>
-                                    <div>
-                                        <p className="text-white text-sm font-bold uppercase tracking-tight mb-1">{t.description || t.category}</p>
-                                        <div className="flex items-center gap-2 text-[10px] font-mono text-gray-500 uppercase">
+                                    <div className="min-w-0 flex-1">
+                                        <p className="text-white text-xs sm:text-sm font-bold uppercase tracking-tight mb-0.5 truncate">{t.description || t.category}</p>
+                                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[9px] sm:text-[10px] font-mono text-gray-500 uppercase leading-none">
                                             <span className="text-system-blue font-bold">{t.player}</span>
                                             <span className="w-1 h-1 rounded-full bg-gray-700" />
                                             <span>{dateStr}</span>
-                                            <span className="w-1 h-1 rounded-full bg-gray-700" />
-                                            <span>{timeStr}</span>
+                                            <span className="hidden sm:inline w-1 h-1 rounded-full bg-gray-700" />
+                                            <span className="hidden sm:inline">{timeStr}</span>
                                             {PaymentIcon && (
                                                 <>
                                                     <span className="w-1 h-1 rounded-full bg-gray-700" />
@@ -464,8 +496,8 @@ export default function Dashboard() {
                                     </div>
                                 </div>
 
-                                <div className="flex items-center gap-6">
-                                    <span className={`font-mono font-bold text-lg ${t.amount > 0 ? 'text-emerald-500' : 'text-white'}`}>
+                                <div className="flex items-center justify-between w-full sm:w-auto sm:justify-end gap-3 pl-14 sm:pl-0 mt-[-10px] sm:mt-0">
+                                    <span className={`font-mono font-bold text-base sm:text-lg ${t.amount > 0 ? 'text-emerald-500' : 'text-white'}`}>
                                         {t.amount > 0 ? '+' : '-'} R$ {Math.abs(t.amount).toFixed(2)}
                                     </span>
                                     <button
@@ -473,7 +505,7 @@ export default function Dashboard() {
                                         className="p-2 text-gray-600 hover:text-system-blue hover:bg-system-blue/10 rounded-lg transition-all"
                                         title="Editar Transação"
                                     >
-                                        <Settings size={18} />
+                                        <Settings size={16} />
                                     </button>
                                 </div>
                             </div>
@@ -482,30 +514,32 @@ export default function Dashboard() {
                 </div>
             </div>
 
-            {/* Recurring Expenses Section */}
+            {/* Recurring Expenses & Incomes Section */}
             <div className="mt-8 relative z-10 mb-20">
                 <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-gray-500 mb-4 flex items-center gap-2">
-                    <Calendar size={14} /> Compromissos Fixos (Mensais)
+                    <Calendar size={14} /> Compromissos Fixos
                 </h3>
                 <div className="space-y-2">
                     {recurring.map((r) => (
-                        <div key={r.id} className="system-card p-4 rounded-xl flex justify-between items-center bg-system-dark/20 border border-white/5 opacity-80">
-                            <div className="flex items-center gap-4">
-                                <div className="p-2 bg-gray-800 rounded-lg text-gray-400">
-                                    <CreditCard size={18} />
+                        <div key={r.id} className="system-card p-3 rounded-xl flex justify-between items-center bg-system-dark/20 border border-white/5 opacity-80">
+                            <div className="flex items-center gap-3">
+                                <div className={`p-2 rounded-lg text-gray-400 ${r.type === 'income' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>
+                                    {r.type === 'income' ? <TrendingUp size={16} /> : <CreditCard size={16} />}
                                 </div>
                                 <div>
-                                    <p className="text-gray-300 text-sm font-bold uppercase tracking-tight">{r.description}</p>
-                                    <p className="text-[9px] text-gray-500 uppercase">{r.player}</p>
+                                    <p className="text-gray-300 text-xs font-bold uppercase tracking-tight">{r.description}</p>
+                                    <p className="text-[9px] text-gray-500 uppercase flex items-center gap-1">
+                                        {r.player} <span className="text-gray-600">•</span> {r.type === 'income' ? 'Receita Fixa' : 'Despesa Fixa'}
+                                    </p>
                                 </div>
                             </div>
-                            <span className="font-mono font-bold text-gray-400">
-                                - R$ {parseFloat(r.amount).toFixed(2)}
+                            <span className={`font-mono font-bold ${r.type === 'income' ? 'text-emerald-500' : 'text-gray-400'}`}>
+                                {r.type === 'income' ? '+' : '-'} R$ {parseFloat(r.amount).toFixed(2)}
                             </span>
                         </div>
                     ))}
                     {recurring.length === 0 && (
-                        <p className="text-xs text-gray-600 italic pl-2">Nenhum gasto fixo cadastrado.</p>
+                        <p className="text-xs text-gray-600 italic pl-2">Nenhum compromisso fixo cadastrado.</p>
                     )}
                 </div>
             </div>
@@ -609,26 +643,48 @@ export default function Dashboard() {
                                     </div>
                                 </div>
 
-                                {/* 4. Recurring */}
+                                {/* 4. Recurring Items (Expenses & Income) */}
                                 <div className="space-y-4">
                                     <p className="text-[10px] text-system-blue font-black uppercase tracking-widest border-b border-system-blue/20 pb-2 flex items-center gap-2">
-                                        <Calendar size={12} /> Gastos Fixos (Automação)
+                                        <Calendar size={12} /> Fixos & Assinaturas
                                     </p>
+
+                                    {/* Expenses List */}
                                     <div className="space-y-2">
-                                        {recurring.map(r => (
+                                        <p className="text-[9px] text-gray-500 uppercase font-black">Saídas Fixas (Aluguel, Internet...)</p>
+                                        {recurring.filter(r => r.type !== 'income').map(r => (
                                             <div key={r.id} className="flex justify-between items-center p-3 bg-black/40 border border-system-border rounded-lg">
                                                 <p className="text-xs text-white">{r.description}</p>
                                                 <div className="flex items-center gap-3">
-                                                    <p className="text-xs font-bold text-system-danger">R$ {parseFloat(r.amount).toFixed(2)}</p>
+                                                    <p className="text-xs font-bold text-system-danger">- R$ {parseFloat(r.amount).toFixed(2)}</p>
                                                     <button onClick={async () => { await deleteRecurringExpense(r.id); await fetchData(); }} className="text-gray-600 hover:text-system-danger"><Trash2 size={14} /></button>
                                                 </div>
                                             </div>
                                         ))}
                                     </div>
-                                    <div className="flex gap-2">
-                                        <input placeholder="Desc: Aluguel" value={newRecDesc} onChange={e => setNewRecDesc(e.target.value)} className="bg-black/40 border border-system-border rounded-lg p-3 text-xs flex-1 outline-none focus:border-system-blue text-white" />
-                                        <input placeholder="R$ 0,00" type="number" value={newRecAmount} onChange={e => setNewRecAmount(e.target.value)} className="bg-black/40 border border-system-border rounded-lg p-3 text-xs w-24 outline-none focus:border-system-blue text-white" />
-                                        <button onClick={handleAddRecurring} className="bg-system-blue/10 border border-system-blue p-3 rounded-lg text-system-blue"><Plus size={18} /></button>
+
+                                    {/* Income List */}
+                                    <div className="space-y-2 pt-2">
+                                        <p className="text-[9px] text-gray-500 uppercase font-black">Entradas Fixas (Vale, Bônus...)</p>
+                                        {recurring.filter(r => r.type === 'income').map(r => (
+                                            <div key={r.id} className="flex justify-between items-center p-3 bg-black/40 border border-system-border rounded-lg">
+                                                <p className="text-xs text-white">{r.description}</p>
+                                                <div className="flex items-center gap-3">
+                                                    <p className="text-xs font-bold text-system-success">+ R$ {parseFloat(r.amount).toFixed(2)}</p>
+                                                    <button onClick={async () => { await deleteRecurringExpense(r.id); await fetchData(); }} className="text-gray-600 hover:text-system-danger"><Trash2 size={14} /></button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {/* Add Form */}
+                                    <div className="flex gap-2 items-center">
+                                        <input placeholder="Desc: Vale Alimentação" value={newRecDesc} onChange={e => setNewRecDesc(e.target.value)} className="bg-black/40 border border-system-border rounded-lg p-3 text-xs flex-1 outline-none focus:border-system-blue text-white" />
+                                        <input placeholder="R$ 0,00" type="number" value={newRecAmount} onChange={e => setNewRecAmount(e.target.value)} className="bg-black/40 border border-system-border rounded-lg p-3 text-xs w-20 outline-none focus:border-system-blue text-white" />
+                                        <div className="flex gap-1">
+                                            <button onClick={() => handleAddRecurring('income')} className="bg-system-success/10 border border-system-success p-3 rounded-lg text-system-success" title="Adicionar Receita"><Plus size={18} /></button>
+                                            <button onClick={() => handleAddRecurring('expense')} className="bg-system-danger/10 border border-system-danger p-3 rounded-lg text-system-danger" title="Adicionar Despesa"><TrendingDown size={18} /></button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>

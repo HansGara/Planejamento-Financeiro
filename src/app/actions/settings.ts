@@ -32,10 +32,10 @@ export async function getRecurringExpenses() {
     return data;
 }
 
-export async function addRecurringExpense(expense: { description: string, amount: number, player: string }) {
+export async function addRecurringExpense(expense: { description: string, amount: number, player: string, type?: "income" | "expense" }) {
     const { error } = await supabase
         .from("recurring_expenses")
-        .insert([expense]);
+        .insert([{ ...expense, type: expense.type || "expense" }]);
 
     revalidatePath("/dashboard");
     return { success: !error };
